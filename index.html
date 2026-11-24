@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WhatChanged</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!-- Search and link-preview metadata: what Google shows under the result, and
+     what Slack/iMessage/Discord show when someone pastes the link. -->
+<meta name="description" content="Free text compare tool: paste your original writing and the AI-edited version to see every word added and removed, highlighted in green and red like a GitHub diff.">
+<meta property="og:title" content="WhatChanged — see every edit the AI made">
+<meta property="og:description" content="Paste your original text and the AI's version. Removed words show in red, added words in green.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://iknowitsimpossible.github.io/whatchanged/">
+<link rel="canonical" href="https://iknowitsimpossible.github.io/whatchanged/">
+<meta name="twitter:card" content="summary">
+<style>
+  /* Colors borrowed from GitHub's diff view. Variables make dark mode a one-block override. */
+  :root {
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #59636e;
+    --accent: #0969da;
+    --del-bg: #ffebe9;
+    --del-strong: #ff818266;
+    --del-text: #82071e;
+    --ins-bg: #dafbe1;
+    --ins-strong: #4ac26b66;
+    --ins-text: #116329;
+  }
+  /* Dark mode follows the OS setting, unless the viewer explicitly picked a
+     theme (data-theme on <html>), which wins in either direction. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117;
+      --panel: #151b23;
+      --border: #3d444d;
+      --text: #f0f6fc;
+      --muted: #9198a1;
+      --accent: #4493f8;
+      --del-bg: #f851491a;
+      --del-strong: #f8514966;
+      --del-text: #ffa198;
+      --ins-bg: #2ea04326;
+      --ins-strong: #2ea04366;
+      --ins-text: #7ee787;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --panel: #151b23;
+    --border: #3d444d;
+    --text: #f0f6fc;
+    --muted: #9198a1;
+    --accent: #4493f8;
+    --del-bg: #f851491a;
+    --del-strong: #f8514966;
+    --del-text: #ffa198;
+    --ins-bg: #2ea04326;
+    --ins-strong: #2ea04366;
+    --ins-text: #7ee787;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding-block: 32px 64px;
+    /* max() keeps a 24px gutter, or more if a phone's notch/side bar needs it */
+    padding-left: max(24px, env(safe-area-inset-left, 0px));
+    padding-right: max(24px, env(safe-area-inset-right, 0px));
+  }
+  .inputs > div, .pane { min-width: 0; } /* let long text wrap instead of widening the page */
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; }
+
+  .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .inputs label { display: block; font-weight: 600; margin-bottom: 6px; }
+  textarea {
+    width: 100%;
+    min-height: 200px;
+    resize: vertical;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    margin: 16px 0 24px;
+  }
+  button {
+    font: inherit; font-size: 14px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: #1f883d; border-color: #1f883d; color: #fff; font-weight: 600; }
+  button.primary:hover { background: #1a7f37; }
+
+  /* Segmented control: two buttons, the active one looks pressed. */
+  .segmented { display: inline-flex; }
+  .segmented button { border-radius: 0; }
+  .segmented button:first-child { border-radius: 6px 0 0 6px; }
+  .segmented button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+  .segmented button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .spacer { flex: 1; }
+
+  .stats { display: flex; gap: 16px; font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+  .stats .added { color: var(--ins-text); font-weight: 600; }
+  .stats .removed { color: var(--del-text); font-weight: 600; }
+
+  .result { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .result.split { display: grid; grid-template-columns: 1fr 1fr; }
+  .pane-header {
+    padding: 8px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; color: var(--muted);
+  }
+  .split .pane + .pane { border-left: 1px solid var(--border); }
+  .pane-body {
+    padding: 12px 16px;
+    white-space: pre-wrap;      /* keep the user's line breaks and spacing */
+    overflow-wrap: anywhere;
+  }
+
+  .del { background: var(--del-strong); color: var(--del-text); border-radius: 2px; }
+  .ins { background: var(--ins-strong); color: var(--ins-text); border-radius: 2px; }
+  .unified .del { text-decoration: line-through; }
+
+  .message { display: block; padding: 24px; text-align: center; color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .inputs, .result.split { grid-template-columns: 1fr; }
+    .split .pane + .pane { border-left: none; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>WhatChanged</h1>
+  <p class="subtitle">Paste your original text and the AI's version to see exactly what was added and removed.</p>
+
+  <section class="inputs">
+    <div>
+      <label for="original">Original</label>
+      <textarea id="original" placeholder="Paste your original text here…"></textarea>
+    </div>
+    <div>
+      <label for="revised">AI-revised</label>
+      <textarea id="revised" placeholder="Paste the AI-generated text here…"></textarea>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <button class="primary" id="compare">Compare</button>
+    <div class="segmented" role="group" aria-label="Diff granularity">
+      <button data-granularity="word" aria-pressed="true">Words</button>
+      <button data-granularity="char" aria-pressed="false">Characters</button>
+    </div>
+    <div class="segmented" role="group" aria-label="View">
+      <button data-view="split" aria-pressed="true">Split</button>
+      <button data-view="unified" aria-pressed="false">Unified</button>
+    </div>
+    <div class="spacer"></div>
+    <button id="sample">Load example</button>
+    <button id="clear">Clear</button>
+  </div>
+
+  <div id="stats" class="stats"></div>
+  <div id="output"></div>
+</main>
+
+<script>
+// ============================================================
+// 1. TOKENIZING — turn a string into the units we compare.
+// ============================================================
+
+// Word mode splits into words and punctuation, each carrying the whitespace
+// that follows it: "Hello, world" -> ["Hello", ", ", "world"]. Keeping the
+// spaces (instead of throwing them away like text.split(" ") would) lets us
+// rebuild the exact original text and catch punctuation-only edits. Gluing
+// them onto the previous token halves the token count, which makes the diff
+// table 4x smaller.
+const WORD_PATTERN = /[\p{L}\p{N}_'’-]+\s*|[^\s\p{L}\p{N}]\s*|\s+/gu;
+
+function tokenize(text, granularity) {
+  if (granularity === "char") return Array.from(text); // Array.from handles emoji correctly
+  return text.match(WORD_PATTERN) || [];
+}
+
+// ============================================================
+// 2. THE DIFF — longest common subsequence (LCS).
+// ============================================================
+// Idea: find the longest list of tokens that appear in BOTH texts in the
+// same order. Those are "unchanged". Everything in the original that is not
+// in that list was deleted; everything in the revision that is not in it
+// was inserted.
+//
+// lcs[i][j] = length of the LCS of a[i..] and b[j..]   (suffixes)
+//   if a[i] === b[j]: lcs[i][j] = 1 + lcs[i+1][j+1]
+//   else:             lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+// We fill it from the bottom-right so we can then walk it top-left -> forward.
+
+const MAX_TABLE_CELLS = 50_000_000; // 2 bytes each = ~100 MB; above this we refuse
+
+function diffTokens(a, b, granularity) {
+  // Optimization: AI edits usually leave the start and end alone. Peeling off
+  // the shared prefix/suffix first makes the expensive table much smaller.
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length, endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+
+  const midA = a.slice(start, endA);
+  const midB = b.slice(start, endB);
+  const n = midA.length, m = midB.length;
+
+  if ((n + 1) * (m + 1) > MAX_TABLE_CELLS) {
+    throw new Error(granularity === "char"
+      ? "Text is too long to compare character by character. Switch to Words, or compare smaller sections."
+      : "Text is too long to compare in one go. Try comparing it a few paragraphs at a time.");
+  }
+
+  // A flat typed array is far faster and lighter than an array of arrays.
+  // 16 bits is enough: an LCS can't be longer than min(n, m), and with the
+  // cell cap above, min(n, m) is at most sqrt(50M) ≈ 7071 < 65535.
+  const width = m + 1;
+  const lcs = new Uint16Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i * width + j] = midA[i] === midB[j]
+        ? lcs[(i + 1) * width + j + 1] + 1
+        : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
+    }
+  }
+
+  // Walk the table to produce a list of operations.
+  const ops = [];
+  if (start > 0) ops.push({ type: "equal", text: a.slice(0, start).join("") });
+
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (midA[i] === midB[j]) {
+      ops.push({ type: "equal", text: midA[i] }); i++; j++;
+    } else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
+      ops.push({ type: "delete", text: midA[i] }); i++;
+    } else {
+      ops.push({ type: "insert", text: midB[j] }); j++;
+    }
+  }
+  while (i < n) ops.push({ type: "delete", text: midA[i++] });
+  while (j < m) ops.push({ type: "insert", text: midB[j++] });
+
+  if (endA < a.length) ops.push({ type: "equal", text: a.slice(endA).join("") });
+  return ops;
+}
+
+// ============================================================
+// 3. CLEANUP — make the result readable for humans.
+// ============================================================
+// Raw LCS is "correct" but choppy. If "the cat sat" became "a dog ran", the
+// spaces still match, so you'd see: [-the-][+a+] [-cat-][+dog+] [-sat-][+ran+].
+// Treating a lone space between two changes as part of the change gives the
+// much easier [-the cat sat-][+a dog ran+].
+
+function cleanup(ops) {
+  const out = ops.map(op => ({ ...op }));
+  for (let k = 1; k < out.length - 1; k++) {
+    const op = out[k];
+    const isTinyGap = op.type === "equal" && /^\s+$/.test(op.text);
+    if (isTinyGap && out[k - 1].type !== "equal" && out[k + 1].type !== "equal") {
+      // Replace one "equal" with a delete + insert of the same text.
+      out.splice(k, 1, { type: "delete", text: op.text }, { type: "insert", text: op.text });
+      k++;
+    }
+  }
+  return reorderAndMerge(out);
+}
+
+// Within each run of changes, put all deletes before all inserts, then glue
+// neighbours of the same type together so we render a few spans, not thousands.
+function reorderAndMerge(ops) {
+  const result = [];
+  let dels = "", ins = "";
+  const flush = () => {
+    if (dels) result.push({ type: "delete", text: dels });
+    if (ins) result.push({ type: "insert", text: ins });
+    dels = ins = "";
+  };
+  for (const op of ops) {
+    if (op.type === "delete") dels += op.text;
+    else if (op.type === "insert") ins += op.text;
+    else {
+      flush();
+      const last = result[result.length - 1];
+      if (last && last.type === "equal") last.text += op.text;
+      else result.push({ ...op });
+    }
+  }
+  flush();
+  return result;
+}
+
+// ============================================================
+// 4. RENDERING
+// ============================================================
+
+// Build DOM nodes with textContent (never innerHTML) so pasted text like
+// "<script>" is shown as text instead of being run as code.
+function span(text, className) {
+  const el = document.createElement("span");
+  if (className) el.className = className;
+  el.textContent = text;
+  return el;
+}
+
+function pane(title, ops, keepTypes) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "pane";
+  const header = document.createElement("div");
+  header.className = "pane-header";
+  header.textContent = title;
+  const body = document.createElement("div");
+  body.className = "pane-body";
+  for (const op of ops) {
+    if (!keepTypes.includes(op.type)) continue;
+    const cls = op.type === "delete" ? "del" : op.type === "insert" ? "ins" : "";
+    body.appendChild(span(op.text, cls));
+  }
+  wrapper.append(header, body);
+  return wrapper;
+}
+
+function renderDiff(ops, view) {
+  const container = document.createElement("div");
+  container.className = `result ${view}`;
+  if (view === "split") {
+    container.append(
+      pane("Original — removed text in red", ops, ["equal", "delete"]),
+      pane("AI-revised — added text in green", ops, ["equal", "insert"]),
+    );
+  } else {
+    container.append(pane("Changes inline", ops, ["equal", "delete", "insert"]));
+  }
+  return container;
+}
+
+// In word mode we count words; in character mode a changed fragment like "y'"
+// isn't a word, so we count visible characters instead.
+function countUnits(text, granularity) {
+  if (granularity === "char") return Array.from(text.replace(/\s/g, "")).length;
+  return (text.match(/[\p{L}\p{N}]+/gu) || []).length;
+}
+
+function renderStats(ops, granularity) {
+  let added = 0, removed = 0, same = 0;
+  for (const op of ops) {
+    const units = countUnits(op.text, granularity);
+    if (op.type === "insert") added += units;
+    else if (op.type === "delete") removed += units;
+    else same += units;
+  }
+  const total = same + removed;
+  const kept = total ? Math.round((same / total) * 100) : 100;
+  const unit = granularity === "char" ? "characters" : "words";
+  stats.innerHTML = "";
+  stats.append(
+    span(`+${added} ${unit} added`, "added"),
+    span(`−${removed} ${unit} removed`, "removed"),
+    span(`${kept}% of the original kept`),
+  );
+}
+
+// ============================================================
+// 5. WIRING IT UP
+// ============================================================
+
+const original = document.getElementById("original");
+const revised = document.getElementById("revised");
+const output = document.getElementById("output");
+const stats = document.getElementById("stats");
+
+const settings = { granularity: "word", view: "split" };
+
+function compare() {
+  stats.innerHTML = "";
+  output.innerHTML = "";
+  if (!original.value && !revised.value) {
+    output.appendChild(span("Paste text into both boxes, then press Compare.", "message"));
+    return;
+  }
+  try {
+    const ops = cleanup(diffTokens(
+      tokenize(original.value, settings.granularity),
+      tokenize(revised.value, settings.granularity),
+      settings.granularity,
+    ));
+    if (ops.every(op => op.type === "equal")) {
+      output.appendChild(span("No differences — the texts are identical.", "message"));
+      return;
+    }
+    renderStats(ops, settings.granularity);
+    output.appendChild(renderDiff(ops, settings.view));
+  } catch (err) {
+    output.appendChild(span(err.message, "message"));
+  }
+}
+
+// Each segmented group updates one setting and re-runs the comparison.
+function setupToggle(attr, key) {
+  const buttons = document.querySelectorAll(`[data-${attr}]`);
+  buttons.forEach(btn => btn.addEventListener("click", () => {
+    settings[key] = btn.dataset[attr];
+    buttons.forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+    compare();
+  }));
+}
+setupToggle("granularity", "granularity");
+setupToggle("view", "view");
+
+document.getElementById("compare").addEventListener("click", compare);
+
+// Ctrl/Cmd + Enter inside either box also compares.
+for (const box of [original, revised]) {
+  box.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) compare();
+  });
+}
+
+document.getElementById("clear").addEventListener("click", () => {
+  original.value = revised.value = "";
+  stats.innerHTML = output.innerHTML = "";
+  original.focus();
+});
+
+document.getElementById("sample").addEventListener("click", () => {
+  original.value =
+`I think that social media is bad for teenagers because it makes them feel more lonely. Studies have shown that teens who use it alot are more likely to be depressed.
+
+Also, it takes time away from sleep and homework. Parents should set limits.`;
+  revised.value =
+`Social media can harm teenagers by increasing feelings of loneliness. Research shows that teens who use it heavily are more likely to experience depression.
+
+It also takes time away from sleep and schoolwork. For these reasons, parents should consider setting limits.`;
+  compare();
+});
+
+compare();
+</script>
+</body>
+</html>
