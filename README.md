@@ -12,15 +12,6 @@ AI writing tools rewrite your text but don't tell you what they changed. WhatCha
 - **Stats**: words added, words removed, and how much of the original was kept
 - Runs entirely in your browser. Your text is never uploaded anywhere.
 
-## Run it locally
-
-It's a single HTML file with no dependencies. Open `index.html` in any browser, or serve the folder:
-
-```bash
-python3 -m http.server 8765
-```
-
-Then visit http://localhost:8765.
 
 ## How it works
 
